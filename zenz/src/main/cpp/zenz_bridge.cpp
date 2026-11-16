@@ -621,7 +621,8 @@ static bool never_abort(void * /*data*/) {
 
 static void clear_session_kv_locked(llama_context *ctx) {
     g_session.draft_review = {};
-    llama_kv_cache_clear(ctx);
+    // 旧KVキャッシュAPIは新しいllama.cppで削除されたため、llama_memory_* に移行した
+    llama_memory_clear(llama_get_memory(ctx), true);
 }
 
 static void destroy_session_context_locked() {
@@ -942,7 +943,7 @@ static CandidateEvaluationResult candidate_evaluate(
         if (is_request_stale(request_seq)) return fail();
         auto result = draft_mismatch(all_tokens, start, start + j, token);
         if (scoped && result.type == CandidateEvaluationResultType::FIX_REQUIRED &&
-            llama_kv_cache_seq_rm(ctx, 0, static_cast<llama_pos>(start + j), -1)) {
+            llama_memory_seq_rm(llama_get_memory(ctx), 0, static_cast<llama_pos>(start + j), -1)) {
             // Keep the verified KV prefix and the prediction that produced the repair.
             cache.predictions.resize(j + 1);
             cache.prompt = prompt_tokens;
@@ -1060,7 +1061,7 @@ static bool extend_candidate_logprobs_locked(
     // The first unscored token is predicted by the last shared token, or by the
     // last prompt token when the candidates have no common prefix.
     const auto suffix_start = static_cast<llama_pos>(prompt_tokens.size() + shared_tokens - 1);
-    if (!llama_kv_cache_seq_rm(ctx, 0, suffix_start, -1)) {
+    if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, suffix_start, -1)) {
         return false;
     }
 

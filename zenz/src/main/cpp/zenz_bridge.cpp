@@ -1158,7 +1158,7 @@ Java_com_kazumaproject_zenz_ZenzEngine_initModel(
 
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0;
-    mparams.use_mmap = true;
+    mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
 
     g_model = llama_model_load_from_file(c_model_path, mparams);
     if (!g_model) {

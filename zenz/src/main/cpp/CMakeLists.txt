@@ -57,7 +57,6 @@ endif()
 add_library(zenz SHARED zenz_bridge.cpp)
 
 target_include_directories(zenz PRIVATE
-        ${CMAKE_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/llama.cpp/include
         ${CMAKE_SOURCE_DIR}/llama.cpp/ggml/include
         ${CMAKE_SOURCE_DIR}/llama.cpp/common

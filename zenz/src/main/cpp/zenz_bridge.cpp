@@ -7,8 +7,14 @@
 #include <atomic>
 #include <cstdint>
 #include <cmath>
+#include <cstring>
 #include <android/log.h>
 #include "llama.h"
+#include "ggml.h"
+#include "ggml-backend.h"
+#ifdef ZENZ_ENABLE_RPC
+#include "ggml-rpc.h"
+#endif
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  "zenz-bridge", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "zenz-bridge", __VA_ARGS__)
@@ -27,6 +33,11 @@ static std::mutex g_param_mutex;   // 設定値の読み書き用
 static std::atomic<uint64_t> g_request_seq{0};
 static std::atomic<uint64_t> g_draft_review_generation{0};
 static bool g_backend_initialized = false;
+
+// RPC (ggml-rpc) サーバーのエンドポイント("host:port")。空=無効。
+// 次回のinitModelで読み込まれる(ロード済みのモデルには影響しない)。
+static std::mutex g_rpc_mutex;
+static std::string g_rpc_endpoint;
 
 struct RuntimeConfig {
     int n_ctx;
@@ -1157,10 +1168,43 @@ Java_com_kazumaproject_zenz_ZenzEngine_initModel(
     }
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;
+
+    // ------- RPC (ggml-rpc) 経由のオフロード -------
+    // shellドメインで動くrpc-server(ggml-rpc-server)に接続し、リモートの
+    // デバイス(Hexagon HT等)をグローバルのバックエンド列挙へ登録する。
+    // add_serverだけでは列挙に乗らないので、ggml_backend_registerも必要。
+    // サーバーが不在ならnullptrが返るので、そのままCPUへフォールバックする。
+    bool use_rpc = false;
+#ifdef ZENZ_ENABLE_RPC
+    std::string rpc_endpoint;
+    {
+        std::lock_guard<std::mutex> lock(g_rpc_mutex);
+        rpc_endpoint = g_rpc_endpoint;
+    }
+    if (!rpc_endpoint.empty()) {
+        ggml_backend_reg_t reg = ggml_backend_rpc_add_server(rpc_endpoint.c_str());
+        if (reg) {
+            ggml_backend_register(reg);
+            use_rpc = true;
+            LOGI("initModel: rpc server %s registered, offloading all layers",
+                 rpc_endpoint.c_str());
+        } else {
+            LOGI("initModel: rpc server %s not reachable, using cpu",
+                 rpc_endpoint.c_str());
+        }
+    }
+#endif
+
+    mparams.n_gpu_layers = use_rpc ? -1 : 0; // -1: 全レイヤーをRPC経由でリモートへ
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
 
     g_model = llama_model_load_from_file(c_model_path, mparams);
+    if (!g_model && use_rpc) {
+        // RPC指定でロードに失敗したときはCPUにフォールバックする。
+        LOGE("initModel: rpc load failed, falling back to cpu");
+        mparams.n_gpu_layers = 0;
+        g_model = llama_model_load_from_file(c_model_path, mparams);
+    }
     if (!g_model) {
         LOGE("Failed to load model");
         env->ReleaseStringUTFChars(jModelPath, c_model_path);
@@ -1277,6 +1321,59 @@ Java_com_kazumaproject_zenz_ZenzEngine_setRuntimeConfig(
     }
 
     LOGI("setRuntimeConfig: n_ctx=%d, n_threads=%d", n_ctx, n_threads);
+}
+
+// ------- JNI: RPC (ggml-rpc) トグル -------
+// rpc-server(ggml-rpc-server)のエンドポイント("host:port")。空文字列で無効。
+// 次回のinitModelで反映される(ロード済みのモデルには影響しない)。
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_kazumaproject_zenz_ZenzEngine_setRpcServer(
+        JNIEnv *env,
+        jobject /* thiz */,
+        jstring jEndpoint
+) {
+    const char *c_endpoint =
+            jEndpoint ? env->GetStringUTFChars(jEndpoint, nullptr) : nullptr;
+    std::string endpoint(c_endpoint ? c_endpoint : "");
+    if (c_endpoint) {
+        env->ReleaseStringUTFChars(jEndpoint, c_endpoint);
+    }
+    const bool enabled = !endpoint.empty();
+    {
+        std::lock_guard<std::mutex> lock(g_rpc_mutex);
+        g_rpc_endpoint = std::move(endpoint);
+    }
+    LOGI("setRpcServer: %s", enabled ? "enabled" : "disabled");
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_kazumaproject_zenz_ZenzEngine_isRpcDeviceRegistered(
+        JNIEnv * /*env*/,
+        jobject /*thiz*/
+) {
+#ifdef ZENZ_ENABLE_RPC
+    // グローバルのバックエンド列挙にRPCデバイス(GPU型)が登録済みか。
+    // initModelのロード前にadd_server+registerが成功していればtrue。
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (!dev) {
+            continue;
+        }
+        ggml_backend_dev_props props;
+        ggml_backend_dev_get_props(dev, &props);
+        if (props.type == GGML_BACKEND_DEVICE_TYPE_GPU && props.name &&
+            strncmp(props.name, "RPC", 3) == 0) {
+            return JNI_TRUE;
+        }
+    }
+    return JNI_FALSE;
+#else
+    // このビルドにはRPCクライアントが含まれていない。
+    return JNI_FALSE;
+#endif
 }
 
 // ------- JNI: 「後半の変換結果」を返す（v1 型） -------

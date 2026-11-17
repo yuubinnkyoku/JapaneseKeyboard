@@ -13,6 +13,15 @@ object ZenzEngine {
     external fun closeModel()
     external fun finishDraftReview(draftReviewId: String)
 
+    /**
+     * RPCサーバー(ggml-rpc-server)のエンドポイント("host:port")。
+     * 空文字列で無効。次回のinitModelで反映される。既定は無効(CPU)。
+     */
+    external fun setRpcServer(endpoint: String?)
+
+    /** RPCデバイスがグローバルのバックエンド列挙に登録済みか。RPC無効ビルドでは常にfalse。 */
+    external fun isRpcDeviceRegistered(): Boolean
+
     external fun setRuntimeConfig(
         nCtx: Int,
         nThreads: Int

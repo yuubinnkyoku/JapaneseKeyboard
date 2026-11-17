@@ -3,6 +3,7 @@ package com.kazumaproject.markdownhelperkeyboard.zenz.runtime
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.provider.Settings
 import com.kazumaproject.zenz.ZenzEngine
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -48,6 +49,11 @@ class ZenzRuntimeService : Service() {
                 if (!initialized || initializedModelPath != modelPath) {
                     initialized = false
                     initializedModelPath = null
+                    val rpcEndpoint = readRpcEndpointSetting()
+                    ZenzEngine.setRpcServer(rpcEndpoint)
+                    if (rpcEndpoint != null) {
+                        Timber.i("zenz rpc requested: %s", rpcEndpoint)
+                    }
                     val loaded = ZenzEngine.initModel(modelPath)
                     if (!loaded) {
                         callback.safeError(requestId, "Could not load the Zenz model.")
@@ -221,6 +227,19 @@ class ZenzRuntimeService : Service() {
     }
 
     private fun isLatest(requestId: Long): Boolean = latestRequestId.get() == requestId
+
+    /**
+     * RPCサーバー(ggml-rpc-server)の接続先。adbで切り替える:
+     *   有効:  adb shell settings put global zenz_rpc "127.0.0.1:50052"
+     *   無効:  adb shell settings put global zenz_rpc ""
+     * 設定は次回のモデル初期化(アプリ再起動やモデル再読み込み)で反映される。
+     * 既定は無効(CPU)。RPC無効ビルドでは設定があってもCPUのまま。
+     */
+    private fun readRpcEndpointSetting(): String? =
+        runCatching {
+            Settings.Global.getString(contentResolver, "zenz_rpc")
+                ?.takeIf { it.isNotBlank() }
+        }.getOrNull()
 
     private fun closeNativeRuntime() {
         runCatching { ZenzEngine.closeModel() }

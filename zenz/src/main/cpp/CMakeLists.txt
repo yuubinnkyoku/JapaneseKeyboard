@@ -40,6 +40,15 @@ endif()
 
 add_subdirectory(llama.cpp)
 
+# -------------------------------------------------------------------
+# RPC設定
+# -------------------------------------------------------------------
+# zenzRpcEnabled=true のときgradleからGGML_RPC=ONとセットで渡される。
+# アプリはCPUビルドのままで、ggmlのRPCクライアントがshellドメインの
+# rpc-server(ggml-rpc-server)経由でリモートのHexagon HT デバイスへ
+# 計算を委譲する。vendorライブラリへの依存は発生しない。
+option(ZENZ_ENABLE_RPC "Build the zenz library with the ggml RPC client backend" OFF)
+
 # The upstream CPU target enables SSE4.2 unconditionally on x86.
 # The Android x86 ABI only guarantees SSSE3.
 if(ANDROID_ABI STREQUAL "x86")
@@ -70,3 +79,7 @@ target_link_libraries(zenz
         ggml
         ${log-lib}
 )
+
+if(ZENZ_ENABLE_RPC)
+    target_compile_definitions(zenz PRIVATE ZENZ_ENABLE_RPC=1)
+endif()

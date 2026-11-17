@@ -45,6 +45,29 @@ def zenzDebugOptimizedNative = providers.gradleProperty("zenzDebugOptimizedNativ
         .get()
         .toBoolean()
 
+// -------------------------------------------------------------------
+// RPC設定: 既定はOFF。ONにするとggmlのRPCクライアントがlibzenzへ組み込まれる。
+// shellドメインで起動したrpc-server(ggml-rpc-server)へTCPで接続し、
+// リモートのHexagon HT デバイスへ全レイヤーをオフロードする(アプリはCPUビルドのまま)。
+// 接続先は実行時にadbで切り替える:
+//   有効:  adb shell settings put global zenz_rpc "127.0.0.1:50052"
+//   無効:  adb shell settings put global zenz_rpc ""
+// 例: gradle.propertiesに
+//   zenzRpcEnabled=true
+// -------------------------------------------------------------------
+def zenzRpcEnabled = providers.gradleProperty("zenzRpcEnabled")
+        .orElse(localProperties.getProperty("zenzRpcEnabled") ?: "false")
+        .get()
+        .toBoolean()
+
+def zenzRpcCmakeArgs = []
+if (zenzRpcEnabled) {
+    zenzRpcCmakeArgs += [
+            "-DZENZ_ENABLE_RPC=ON",
+            "-DGGML_RPC=ON"
+    ]
+}
+
 android {
     namespace 'com.kazumaproject.zenz'
     compileSdk = 37
@@ -65,7 +88,7 @@ android {
             }
             externalNativeBuild {
                 cmake {
-                    arguments "-DZENZ_NATIVE_OPTIMIZED=${zenzDebugOptimizedNative ? 'ON' : 'OFF'}"
+                    arguments "-DZENZ_NATIVE_OPTIMIZED=${zenzDebugOptimizedNative ? 'ON' : 'OFF'}", *zenzRpcCmakeArgs
                 }
             }
         }
@@ -75,7 +98,7 @@ android {
             }
             externalNativeBuild {
                 cmake {
-                    arguments "-DZENZ_NATIVE_OPTIMIZED=ON"
+                    arguments "-DZENZ_NATIVE_OPTIMIZED=ON", *zenzRpcCmakeArgs
                 }
             }
             minifyEnabled false

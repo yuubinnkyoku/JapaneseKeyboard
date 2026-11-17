@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- RPCサーバー(ggml-rpc-server)へのTCP接続に必要。
+         debugビルド(検証テストAPKを含む)にのみマージされ、
+         リリースAPKの権限は変わらない。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+</manifest>

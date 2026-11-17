@@ -45,6 +45,51 @@ def zenzDebugOptimizedNative = providers.gradleProperty("zenzDebugOptimizedNativ
         .get()
         .toBoolean()
 
+// -------------------------------------------------------------------
+// NPU (Hexagon) 設定: 既定はOFF。ONにするときはzenzHexagonSdkRootが必須。
+// skel(libggml-htp-*.so)とDSP側libomp.soは事前ビルドのものを使うため、
+// zenzHexagonPrebuiltDirに置いたファイルをjniLibsへコピーする。
+// 例: gradle.propertiesやlocal.propertiesに
+//   zenzNpuEnabled=true
+//   zenzHexagonSdkRoot=C\:\\Qualcomm\\HexagonSDK\\5.x.x
+//   zenzHexagonPrebuiltDir=D\:/path/to/prebuilt-htp-libs
+// -------------------------------------------------------------------
+def zenzNpuEnabled = providers.gradleProperty("zenzNpuEnabled")
+        .orElse(localProperties.getProperty("zenzNpuEnabled") ?: "false")
+        .get()
+        .toBoolean()
+def zenzHexagonSdkRoot = providers.gradleProperty("zenzHexagonSdkRoot")
+        .orElse(localProperties.getProperty("zenzHexagonSdkRoot") ?: "")
+        .get()
+def zenzHexagonToolsRoot = providers.gradleProperty("zenzHexagonToolsRoot")
+        .orElse(localProperties.getProperty("zenzHexagonToolsRoot") ?: "")
+        .get()
+def zenzHexagonPrebuiltDir = providers.gradleProperty("zenzHexagonPrebuiltDir")
+        .orElse(localProperties.getProperty("zenzHexagonPrebuiltDir") ?: "")
+        .get()
+
+def zenzNpuCmakeArgs = []
+if (zenzNpuEnabled) {
+    if (!zenzHexagonSdkRoot) {
+        throw new GradleException("zenzNpuEnabled=true requires zenzHexagonSdkRoot (Hexagon SDK install path).")
+    }
+    if (!zenzHexagonPrebuiltDir) {
+        throw new GradleException("zenzNpuEnabled=true requires zenzHexagonPrebuiltDir (directory containing libggml-htp-*.so and the DSP-side libomp.so).")
+    }
+    zenzNpuCmakeArgs += [
+            "-DZENZ_ENABLE_NPU=ON",
+            "-DGGML_HEXAGON=ON",
+            "-DGGML_HEXAGON_HTP_SKEL=OFF",
+            "-DHEXAGON_SDK_ROOT=${zenzHexagonSdkRoot}"
+    ]
+    if (zenzHexagonToolsRoot) {
+        zenzNpuCmakeArgs += "-DHEXAGON_TOOLS_ROOT=${zenzHexagonToolsRoot}"
+    }
+}
+
+// skelを格納するjniLibsの生成先。arm64-v8a決め打ち(NPU搭載端末はarm64のみ)。
+def zenzNpuJniLibsRoot = layout.buildDirectory.dir("generated/zenzNpuJniLibs")
+
 android {
     namespace 'com.kazumaproject.zenz'
     compileSdk = 37
@@ -65,7 +110,7 @@ android {
             }
             externalNativeBuild {
                 cmake {
-                    arguments "-DZENZ_NATIVE_OPTIMIZED=${zenzDebugOptimizedNative ? 'ON' : 'OFF'}"
+                    arguments "-DZENZ_NATIVE_OPTIMIZED=${zenzDebugOptimizedNative ? 'ON' : 'OFF'}", *zenzNpuCmakeArgs
                 }
             }
         }
@@ -75,7 +120,7 @@ android {
             }
             externalNativeBuild {
                 cmake {
-                    arguments "-DZENZ_NATIVE_OPTIMIZED=ON"
+                    arguments "-DZENZ_NATIVE_OPTIMIZED=ON", *zenzNpuCmakeArgs
                 }
             }
             minifyEnabled false
@@ -104,6 +149,19 @@ android {
     sourceSets {
         main {
             assets.srcDirs = [generatedZenzAssetsDir.get().asFile]
+            if (zenzNpuEnabled) {
+                // 事前ビルドのHTP skelをAPKのnativeLibraryDirに同梱する
+                jniLibs.srcDirs += [zenzNpuJniLibsRoot.get().asFile]
+            }
+        }
+    }
+
+    if (zenzNpuEnabled) {
+        packaging {
+            jniLibs {
+                // Hexagon向けバイナリ(DSP側ELF)はAndroidのstrip対象から外す
+                keepDebugSymbols += ["**/libggml-htp-*.so", "**/libomp.so"]
+            }
         }
     }
 }
@@ -134,8 +192,21 @@ def prepareZenzModel = tasks.register("prepareZenzModel", Exec) {
     }
 }
 
+def prepareZenzNpuLibs = tasks.register("prepareZenzNpuLibs", Copy) {
+    group = "zenz"
+    description = "Copies prebuilt Hexagon HTP skel libraries into the APK's jniLibs."
+
+    from(file(zenzHexagonPrebuiltDir)) {
+        include "libggml-htp-*.so", "libomp.so"
+    }
+    into new File(zenzNpuJniLibsRoot.get().asFile, "arm64-v8a")
+}
+
 tasks.named("preBuild").configure {
     dependsOn(prepareZenzModel)
+    if (zenzNpuEnabled) {
+        dependsOn(prepareZenzNpuLibs)
+    }
 }
 
 dependencies {

@@ -8,7 +8,10 @@
 #include <cstdint>
 #include <cmath>
 #include <android/log.h>
+#include <cstring>
 #include "llama.h"
+#include "ggml.h"
+#include "ggml-backend.h"
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  "zenz-bridge", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "zenz-bridge", __VA_ARGS__)
@@ -27,6 +30,10 @@ static std::mutex g_param_mutex;   // 設定値の読み書き用
 static std::atomic<uint64_t> g_request_seq{0};
 static std::atomic<uint64_t> g_draft_review_generation{0};
 static bool g_backend_initialized = false;
+
+// NPU(Hexagon)の明示トグル。initModelのタイミングで読み込まれる。
+// ビルド時にZENZ_ENABLE_NPUが定義されていない場合は常に無効。
+static std::atomic<bool> g_npu_enabled{false};
 
 struct RuntimeConfig {
     int n_ctx;
@@ -1118,6 +1125,27 @@ static bool extend_candidate_logprobs_locked(
     return true;
 }
 
+// ------- NPU (Hexagon) 判定 -------
+// ggmlのバックエンドレジストリにHexagonデバイスがあるかを返す。
+// スケルトンの読み込み成否まではここでは確認しない(モデルロード時に判定する)。
+#ifdef ZENZ_ENABLE_NPU
+static bool zenz_hexagon_available() {
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (!dev) {
+            continue;
+        }
+        ggml_backend_dev_props props;
+        ggml_backend_dev_get_props(dev, &props);
+        if (props.type == GGML_BACKEND_DEVICE_TYPE_GPU && props.description &&
+            strstr(props.description, "Hexagon") != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 // ------- JNI: モデル初期化・キャンセル・解放 -------
 // package com.kazumaproject.zenz; class ZenzEngine
 
@@ -1156,11 +1184,27 @@ Java_com_kazumaproject_zenz_ZenzEngine_initModel(
         g_backend_initialized = true;
     }
 
+    bool use_npu = false;
+#ifdef ZENZ_ENABLE_NPU
+    if (g_npu_enabled.load(std::memory_order_relaxed)) {
+        use_npu = zenz_hexagon_available();
+        if (!use_npu) {
+            LOGI("initModel: npu requested but no Hexagon device found, using cpu");
+        }
+    }
+#endif
+
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;
+    mparams.n_gpu_layers = use_npu ? -1 : 0; // -1: 全レイヤーをNPUへオフロード
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
 
     g_model = llama_model_load_from_file(c_model_path, mparams);
+    if (!g_model && use_npu) {
+        // NPU指定でロードに失敗したときはCPUにフォールバックする。
+        LOGE("initModel: npu load failed, falling back to cpu");
+        mparams.n_gpu_layers = 0;
+        g_model = llama_model_load_from_file(c_model_path, mparams);
+    }
     if (!g_model) {
         LOGE("Failed to load model");
         env->ReleaseStringUTFChars(jModelPath, c_model_path);
@@ -1277,6 +1321,35 @@ Java_com_kazumaproject_zenz_ZenzEngine_setRuntimeConfig(
     }
 
     LOGI("setRuntimeConfig: n_ctx=%d, n_threads=%d", n_ctx, n_threads);
+}
+
+// ------- JNI: NPU (Hexagon) トグル -------
+// 明示トグル。次回のinitModelで反映される(ロード済みのモデルには影響しない)。
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_kazumaproject_zenz_ZenzEngine_setNpuEnabled(
+        JNIEnv * /*env*/,
+        jobject /*thiz*/,
+        jboolean jEnabled
+) {
+    bool enabled = jEnabled == JNI_TRUE;
+    g_npu_enabled.store(enabled, std::memory_order_relaxed);
+    LOGI("setNpuEnabled: %d", (int) enabled);
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_kazumaproject_zenz_ZenzEngine_isNpuAvailable(
+        JNIEnv * /*env*/,
+        jobject /*thiz*/
+) {
+#ifdef ZENZ_ENABLE_NPU
+    return zenz_hexagon_available() ? JNI_TRUE : JNI_FALSE;
+#else
+    // このビルドにはHexagonバックエンドが含まれていない。
+    return JNI_FALSE;
+#endif
 }
 
 // ------- JNI: 「後半の変換結果」を返す（v1 型） -------

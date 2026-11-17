@@ -32,6 +32,14 @@ add_definitions(-D__ANDROID__)
 # Androidではそもそも使えませんが、ARM NEONなどは自動で有効になります。
 # 基本的に -O3 があれば大丈夫です。
 
+# -------------------------------------------------------------------
+# NPU (Hexagon) 設定
+# -------------------------------------------------------------------
+# zenzNpuEnabled=true のときgradleからGGML_HEXAGON=ONとセットで渡される。
+# skel(libggml-htp-*.so)は事前ビルドのものをgradleがjniLibsへ配置するため、
+# ここではAndroid側バックエンドのコンパイルのみ行う(GGML_HEXAGON_HTP_SKEL=OFF)。
+option(ZENZ_ENABLE_NPU "Build the zenz library with the Hexagon NPU backend" OFF)
+
 # The bundled zenz engine supplies all four Full Play ABIs.
 # The llamafile kernel assumes ARM half-precision loads absent on ARMv7.
 if(ANDROID_ABI STREQUAL "armeabi-v7a")
@@ -63,6 +71,10 @@ target_include_directories(zenz PRIVATE
 )
 
 find_library(log-lib log)
+
+if(ZENZ_ENABLE_NPU)
+    target_compile_definitions(zenz PRIVATE ZENZ_ENABLE_NPU=1)
+endif()
 
 target_link_libraries(zenz
         PRIVATE

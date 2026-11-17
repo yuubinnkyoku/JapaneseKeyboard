@@ -18,6 +18,15 @@ object ZenzEngine {
         nThreads: Int
     )
 
+    /**
+     * NPU(Hexagon)を使用するかどうかの明示トグル。
+     * 次回のinitModelで反映される。既定は無効(CPU)。
+     */
+    external fun setNpuEnabled(enabled: Boolean)
+
+    /** Hexagonデバイスが利用可能か。CPUビルドでは常にfalse。 */
+    external fun isNpuAvailable(): Boolean
+
     external fun generate(
         prompt: String,
         maxTokens: Int

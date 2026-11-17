@@ -3,6 +3,7 @@ package com.kazumaproject.markdownhelperkeyboard.zenz.runtime
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.provider.Settings
 import com.kazumaproject.zenz.ZenzEngine
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -48,6 +49,14 @@ class ZenzRuntimeService : Service() {
                 if (!initialized || initializedModelPath != modelPath) {
                     initialized = false
                     initializedModelPath = null
+                    val npuEnabled = readNpuEnabledSetting()
+                    ZenzEngine.setNpuEnabled(npuEnabled)
+                    if (npuEnabled) {
+                        Timber.i(
+                            "zenz npu requested, device available=%b",
+                            ZenzEngine.isNpuAvailable(),
+                        )
+                    }
                     val loaded = ZenzEngine.initModel(modelPath)
                     if (!loaded) {
                         callback.safeError(requestId, "Could not load the Zenz model.")
@@ -247,6 +256,17 @@ class ZenzRuntimeService : Service() {
             runCatching { onError(requestId, message) }
         }
     }
+
+    /**
+     * NPU(Hexagon)の明示トグル。adbで切り替える:
+     *   有効:  adb shell settings put global zenz_npu 1
+     *   無効:  adb shell settings put global zenz_npu 0
+     * 設定は次回のモデル初期化(アプリ再起動やモデル再読み込み)で反映される。
+     * 既定は無効(CPU)。
+     */
+    private fun readNpuEnabledSetting(): Boolean =
+        runCatching { Settings.Global.getInt(contentResolver, "zenz_npu", 0) == 1 }
+            .getOrDefault(false)
 
     private fun CoroutineDispatcher.closeIfPossible() {
         (this as? AutoCloseable)?.close()
